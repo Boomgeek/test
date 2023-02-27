@@ -1,0 +1,566 @@
+Project keeptask_er {
+  database_type: 'PostgreSQL'
+  Note: 'This ER diagram has provide for Keeptask.app database'
+}
+
+
+//-----------------Schema: core-----------------//
+// core screma use for share public/core data 
+// between customer and admin schema
+
+// Enum
+Enum core.day {
+  MON [note: 'Monday']
+  TUE [note: 'Tuesday']
+  WED [note: 'Wednesday']
+  THU [note: 'Thursday']
+  FRI [note: 'Friday']
+  SAT [note: 'Saturday']
+  SUN [note: 'Sunday']
+}
+
+
+Enum core.file_type {
+  JPEG
+  PNG
+  PDF
+  CSV
+}
+
+Enum core.otp_type {
+  PHONE
+  EMAIL
+}
+
+Enum core.otp_status {
+  PENDING [note: "send new-otp"]
+  VERIFIED [note: "pass_code and ref_code has correct and not-expire and PENDING"]
+  CANCEL [note: "add this status to previos-otp when you send new-otp but previos-otp PENDING and not expire"]
+}
+
+Enum core.feture_group_type {
+  ADMIN
+  CUSTOMER
+}
+
+Enum core.permission {
+  C [note: "Create"]
+  R [note: "Read"]
+  U [note: "Update"]
+  D [note: "Delete"]
+}
+
+
+// Table
+Table core.file {
+  id serial [PK]
+  code varchar [unique, not null]
+  path varchar [unique, not null]
+  size float [not null]
+  file_type core.file_type [not null]
+
+  is_active boolean [not null]
+  create_at timestamp [not null]
+  update_at timestamp [not null]
+}
+
+Table core.otp {
+  id serial [PK]
+  otp_type core.otp_type [not null]
+  ref_code varchar [unique, not null, note: "send to frontend, please add a ref_code to JWT-object of accessToken for relational"]
+  pass_code varchar [not null, note: "send to traget devices (phone/email)"]
+  meta_data json [note: "add response data from 3rd party services (sms/email)"]
+  
+  create_at timestamp [not null]
+  expire_datetime timestamp [not null]
+}
+
+Table core.otp_remote [note: "this table is used for adding core.otp.id of adm.user when needing to remote to cus.organization"] 
+{
+  otp_id int [PK, ref: - core.otp.id]
+  remote_to_customer_id int [not null,ref: > cus.user.id]
+  
+  create_at timestamp [not null]
+}
+
+Table core.otp_transaction {
+  otp_id int [PK, ref: > core.otp.id]
+  otp_status  core.otp_status [PK]
+  
+  create_at timestamp [not null]
+}
+
+// ref: https://countrycode.org
+Table core.phone_prefix {
+  code varchar [PK]
+  country varchar [unique]
+
+  is_active boolean [not null, note: "active only allowed country"]
+}
+
+// ref: https://taxsummaries.pwc.com/glossary/currency-codes
+Table core.currency {
+  code varchar [PK, note:"THB,USD"]
+  country varchar [unique]
+  unit varchar [note:"bath,dollar"]
+  
+  is_active boolean [not null, note: "active only allowed country"]
+}
+
+
+Table core.feture_group {
+  id serial [PK]
+  code varchar [unique, not null]
+  feture_group_type core.feture_group_type [not null]
+  name varchar [not null]
+  description varchar [not null]
+  
+  create_admin_id int [not null, ref: > adm.user.id]
+  create_at timestamp [not null]
+  update_admin_id int [not null, ref: > adm.user.id]
+  update_at timestamp [not null]
+  
+  indexes {
+    (feture_group_type, name) [unique]
+  }
+}
+
+Table core.feature {
+  id serial [PK]
+  feture_group_id int [not null, ref: > core.feture_group.id]
+  name varchar [not null]
+  description varchar [not null]
+  
+  create_admin_id int [not null, ref: > adm.user.id]
+  create_at timestamp [not null]
+  update_admin_id int [not null, ref: > adm.user.id]
+  update_at timestamp [not null]
+}
+
+Table core.plan {
+  id serial [PK]
+  code varchar [unique, not null]
+  plan_spec_id int [unique, not null, ref: - core.plan_spec.id]
+  name varchar [not null]
+  description varchar [not null]
+  price_per_day int [not null]
+  
+  create_admin_id int [not null, ref: > adm.user.id]
+  create_at timestamp [not null]
+  update_admin_id int [not null, ref: > adm.user.id]
+  update_at timestamp [not null]
+}
+
+Table core.plan_spec {
+  id serial [PK]
+  max_storage int [not null, note: "Gigabyte"]
+  max_organization int [not null]
+  max_role int [not null]
+  max_tag int [not null]
+  max_employee int [not null]
+  max_project int [not null]
+      
+  create_admin_id int [not null, ref: > adm.user.id]
+  create_at timestamp [not null]
+  update_admin_id int [not null, ref: > adm.user.id]
+  update_at timestamp [not null]
+}
+
+Table core.plan_feature {
+  id serial [PK]
+  plan_id int [not null, ref: > core.plan.id]
+  feature_id int [not null, ref: > core.feature.id]
+  permission core.permission [not null]
+  
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+
+  indexes {
+    (plan_id, feature_id, permission) [unique]
+  }
+}
+
+//-----------------Schema: cus--------------//
+// cus schema is "customer data"
+
+//Enum
+Enum cus.user_type {
+  REMOTE [note: "use for auto-generate-user when create organization (admin can remote and support)"]
+  HOST [note: "use for auto-generate-user when first register"]
+  EMPLOYEE [note: "use for the user has been created by HOST"]
+}
+
+Enum cus.wallet_activity_type {
+  DEPOSIT [note: "`+money`: HOST deposits money to the wallet"]
+  PROMOTION [note: "`+money`: SYSTEM deposits money to the HOST wallet, When HOST using the promotion code"]
+  CHARGE [note: "`-money`: SYSTEM charges money from HOST wallet for organization-plans or another fee"]
+}
+
+Enum cus.wallet_activity_provider {
+  SYSTEM [note: "activity_type = PROMOTION or CHARGE"]
+  SCB [note: "activity_type = DEPOSIT"]
+}
+
+Enum cus.wallet_transaction_status {
+  PENDING
+  CANCEL
+  SUCCESSFUL
+}
+
+
+
+// Table
+Table cus.user {
+  id serial [PK]
+  code varchar [unique, not null]
+  first_name varchar
+  last_name varchar
+  
+  // authen data
+  phone_prefix_code varchar [ref: > core.phone_prefix.code]
+  phone_number varchar
+  email varchar [unique]
+  
+  // optional data
+  image_id int [unique, ref: - cus.file.id]
+  nick_name varchar
+  line_account varchar
+  date_of_birth date
+  
+  // setting data
+  user_type cus.user_type [not null]
+  is_active boolean [not null]
+  
+  create_user_id int [ref: > cus.user.id]
+  create_at timestamp [not null]
+  update_user_id int [ref: > cus.user.id]
+  update_at timestamp [not null]
+  
+  indexes {
+    (phone_prefix_code, phone_number) [unique]
+  }
+}
+
+Table cus.file {
+  id serial [PK]
+  file_id int [unique, not null, ref: - core.file.id]
+  user_id int [not null, ref: > cus.user.id]
+}
+
+
+Table cus.otp {
+  id serial [PK]
+  otp_id int [unique, not null, ref: - core.otp.id]
+  user_id int [ref: > cus.user.id]
+}
+
+
+Table cus.organization {
+  id serial [PK]
+  code varchar [unique, not null]
+  name varchar [unique, not null]
+  image_id int [unique, ref: - cus.file.id]
+  host_id int [not null, ref: > cus.user.id]
+  
+  // setting data
+  currency_code varchar [not null, ref: > core.currency.code]
+  is_flexible_work_time boolean [not null]
+  is_active boolean [not null]
+  
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > cus.user.id]
+  update_at timestamp [not null]
+}
+
+Table cus.organization_work_time {
+  id serial [PK]
+  organization_id int [ref: > cus.organization.id]
+  day core.day [not null] 
+  
+  start_time time [not null]
+  stop_time time [not null]
+  
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > cus.user.id]
+  update_at timestamp [not null]
+}
+
+Table cus.organization_user {
+  id serial [PK]
+  organization_id int [ref: > cus.organization.id]
+  user_id int [ref: > cus.user.id]
+  organization_role_id int [ref: > cus.organization_role.id]
+  
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > cus.user.id]
+  update_at timestamp [not null]
+
+  indexes {
+    (organization_id, user_id) [unique, note: "the user can exist in many organizations when `cus.user.is_host=true`"]
+  }
+}
+
+Table cus.organization_user_work_time [note: "use only cus.organization.is_flexible_work_time=true"]
+{
+  id serial [PK]
+  organization_user_id int [ref: > cus.organization_user.id]
+  day core.day [not null] 
+  
+  start_time time [not null]
+  stop_time time [not null]
+  
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > cus.user.id]
+  update_at timestamp [not null]
+}
+
+Table cus.organization_role {
+  id serial [PK]
+  code varchar [unique, not null]
+  organization_id int [not null, ref: > cus.organization.id]
+  name varchar [not null]
+  description varchar [not null]
+  
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > cus.user.id]
+  update_at timestamp [not null]
+  
+  indexes {
+    (organization_id, name) [unique]
+  }
+}
+
+Table cus.organization_role_feature {
+  id serial [PK]
+  organization_role_id int [not null, ref: > cus.organization_role.id]
+  feature_id int [not null, ref: > core.feature.id]
+  permission core.permission [not null]
+  
+  
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+
+  indexes {
+    (organization_role_id, feature_id, permission) [unique]
+  }
+}
+
+Table cus.project {
+  id serial [PK]
+  code varchar [unique, not null]
+  organization_id int [not null, ref: > cus.organization.id]
+  name varchar [unique, not null]
+  description varchar [not null]
+  image_id int [unique, ref: - cus.file.id]
+
+  is_active boolean [not null]
+  
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > cus.user.id]
+  update_at timestamp [not null]
+}
+
+Table cus.project_user {
+  id serial [PK]
+  project_id int [not null, ref: > cus.project.id]
+  user_id int [not null, ref: > cus.user.id]
+
+  is_active boolean [not null]
+
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > cus.user.id]
+  update_at timestamp [not null]
+
+  indexes {
+    (project_id, user_id) [unique]
+  }
+}
+
+Table cus.tag {
+  id serial [PK]
+  code varchar [unique, not null]
+  organization_id int [not null, ref: > cus.organization.id]
+  name varchar [unique, not null]
+  description varchar [not null]
+  image_id int [unique, ref: - cus.file.id]
+
+  is_active boolean [not null]
+  
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > cus.user.id]
+  update_at timestamp [not null]
+}
+
+Table cus.timesheet {
+  id serial [PK]
+  project_user_id int [not null, ref: > cus.project_user.id]
+
+  title varchar [not null] 
+  html_description text [not null] 
+
+  start_datetime timestamp [not null]
+  stop_datetime timestamp [not null]
+
+  create_user_id int [not null, ref: > cus.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > cus.user.id]
+  update_at timestamp [not null]
+}
+
+Table cus.timesheet_tag {
+  id serial [PK]
+  timesheet_id int [not null, ref: > cus.timesheet.id]
+  tag_id int [not null, ref: > cus.tag.id]
+}
+
+Table cus.timesheet_image {
+  id serial [PK]
+  timesheet_id int [not null, ref: > cus.timesheet.id]
+  image_id int [unique, ref: - cus.file.id]
+}
+
+Table cus.wallet {
+  id serial [PK]
+  code varchar [unique, not null]
+  user_id int [not null, ref: - cus.user.id, note: "for cus.user.type=HOST only"]
+
+  // wait for select payment gateway
+}
+
+Table cus.wallet_activity {
+  id serial [PK]
+  code varchar [unique, not null]
+  wallet_id int [not null, ref: > cus.wallet.id]
+  type cus.wallet_activity_type [not null]
+  provider cus.wallet_activity_provider [not null]
+  credit_amount float [not null, note:"money (currency of system)"]
+
+  create_at timestamp [not null]
+}
+
+Table cus.wallet_transaction {
+  id serial [PK]
+  code varchar [unique, not null]
+  wallet_activity_id int [not null, ref: > cus.wallet_activity.id]
+  status cus.wallet_transaction_status [not null]
+  meta_data json [note: "add response data from provider"]
+
+  create_at timestamp [not null]
+}
+
+Table cus.organization_plan_activity {
+  id serial [PK]
+  code varchar [unique, not null]
+  organization_id int [not null, ref: > cus.organization.id]
+  plan_id int [not null, ref: > core.plan.id]
+
+  create_at timestamp [not null]
+}
+
+Table cus.organization_plan_transaction [note: "cornjob for scan plan usage in 24HR"] {
+  id serial [PK]
+  code varchar [unique, not null]
+  organization_plan_activity_id int [not null, ref: > cus.organization_plan_activity.id]
+  wallet_activity_id int [not null, ref: > cus.wallet_activity.id, note: "for cus.wallet_activity.type=CHARGE only"]
+
+  start_usage_at timestamp [not null]
+  end_usage_at timestamp [not null]
+
+  create_at timestamp [not null]
+}
+
+Table cus.promotion_activity {
+  id serial [PK]
+  code varchar [unique, not null]
+
+  // ค่อยคิด
+  // - type: คูณจำนวนเงินที่เติมตามเงื่อนไข
+  // - type: เพิ่มจำนวนเงินคงที่ตามเงื่อนไข เช่น เติมเงิน 500 ขึ้นไปรับเงินเพิ่ม 300 เป็นต้น
+  // - โปรโมชันควรมีเงื่อนไขได้ เช่น เงินขั้นต่ำที่ใช้ในการเติม ถึงจะได้รับโปรโมชันนี้
+  // - โปรโมชันสามารถระบุให้ใช้ได้กับทุกคน หรือ บางคนได้
+  // - วันหมดอายุของโปรโมชัน
+}
+
+//-----------------Schema: adm--------------//
+// adm schema is "admin data"
+
+//Enum
+
+
+// Table
+Table adm.user {
+  id serial [PK]
+  code varchar [unique, not null]
+  first_name varchar [not null]
+  last_name varchar [not null]
+  nick_name varchar
+  email varchar [unique]
+  image_id int [unique, ref: - adm.file.id]
+
+  is_active boolean [not null]
+  
+  create_user_id int [ref: > adm.user.id]
+  create_at timestamp [not null]
+  update_user_id int [ref: > adm.user.id]
+  update_at timestamp [not null]
+}
+
+Table adm.file {
+  id serial [PK]
+  file_id int [unique, not null, ref: - core.file.id]
+  user_id int [not null, ref: - adm.user.id]
+}
+
+
+Table adm.otp {
+  id serial [PK]
+  otp_id int [unique, not null, ref: - core.otp.id]
+  user_id int [not null, ref: > adm.user.id]
+}
+
+
+Table adm.role {
+  id serial [PK]
+  code varchar [unique, not null]
+  name varchar [not null, unique]
+  description varchar [not null]
+  
+  create_user_id int [not null, ref: > adm.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > adm.user.id]
+  update_at timestamp [not null]
+}
+
+Table adm.role_feature {
+  id serial [PK]
+  role_id int [not null, ref: > adm.role.id]
+  feature_id int [not null, ref: > core.feature.id]
+  permission core.permission [not null]
+  
+  create_user_id int [not null, ref: > adm.user.id]
+  create_at timestamp [not null]
+
+  indexes {
+    (feature_id, permission) [unique]
+  }
+}
+
+Table adm.user_role {
+  user_id int [PK, ref: > adm.role.id]
+  role_id int [not null, ref: > adm.role.id]
+  
+  create_user_id int [not null, ref: > adm.user.id]
+  create_at timestamp [not null]
+  update_user_id int [not null, ref: > adm.user.id]
+  update_at timestamp [not null]
+}
+
+
